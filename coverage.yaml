@@ -10,22 +10,24 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Search and run make_coverage.bat
+    - name: Search and run make_coverage.bat files
       run: |
-        $file = Get-ChildItem -Path . -Filter make_coverage.bat -Recurse
-        if ($file) {
-          & $file.FullName
+        $files = Get-ChildItem -Path . -Filter make_coverage.bat -Recurse
+        if ($files) {
+          $files | ForEach-Object {
+            & $_.FullName
+          }
         } else {
           Write-Error "make_coverage.bat not found"
         }
       shell: pwsh
 
-    - name: Search for coverage.xml
+    - name: Search for coverage.xml files
       id: find_coverage
       run: |
-        $file = Get-ChildItem -Path . -Filter coverage.xml -Recurse
-        if ($file) {
-          Write-Output "::set-output name=coverage_path::$($file.FullName)"
+        $files = Get-ChildItem -Path . -Filter coverage.xml -Recurse
+        if ($files) {
+          $files | ForEach-Object { Write-Output "::set-output name=coverage_paths::$($_.FullName)" }
         } else {
           Write-Error "coverage.xml not found"
         }
@@ -34,14 +36,22 @@ jobs:
     - name: Extract coverage data
       id: extract_coverage
       run: |
-        $coveragePath = "${{ steps.find_coverage.outputs.coverage_path }}"
-        if (Test-Path $coveragePath) {
-          $coverageData = Get-Content $coveragePath
-          # Extract the coverage data as needed
-          $coverageSummary = "Coverage data extracted: " + $coverageData
-          Write-Output "::set-output name=coverage_summary::$coverageSummary"
+        $coveragePaths = "${{ steps.find_coverage.outputs.coverage_paths }}"
+        $coverageSummaries = @()
+        if ($coveragePaths) {
+          $coveragePaths.Split("`n") | ForEach-Object {
+            if (Test-Path $_) {
+              $coverageData = Get-Content $_
+              # Extract the coverage data as needed
+              $coverageSummary = "Coverage data extracted from $_: " + $coverageData
+              $coverageSummaries += $coverageSummary
+            } else {
+              Write-Error "coverage.xml not found at $_"
+            }
+          }
+          Write-Output "::set-output name=coverage_summaries::$($coverageSummaries -join '---')"
         } else {
-          Write-Error "coverage.xml not found"
+          Write-Error "No coverage.xml files found"
         }
       shell: pwsh
 
@@ -50,19 +60,21 @@ jobs:
       uses: actions/github-script@v6
       with:
         script: |
-          const coverageSummary = `Coverage Summary:\n${{ steps.extract_coverage.outputs.coverage_summary }}`
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: coverageSummary
-          })
+          const coverageSummaries = `${{ steps.extract_coverage.outputs.coverage_summaries }}`.split('---');
+          coverageSummaries.forEach(summary => {
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `Coverage Summary:\n${summary}`
+            });
+          });
 
     - name: Deploy coverage data to GitHub Pages
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       run: |
         mkdir -p out
-        echo "${{ steps.extract_coverage.outputs.coverage_summary }}" > out/index.html
+        echo "${{ steps.extract_coverage.outputs.coverage_summaries }}" > out/index.html
       shell: bash
 
     - name: Deploy to GitHub Pages
